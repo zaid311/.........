@@ -89,6 +89,9 @@ const client = new Client({ intents: [
   GatewayIntentBits.GuildEmojisAndStickers,
 ] });
 
+client.on('error', err => console.error('Discord client error:', err));
+process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
+
 // ─── ROBLOX API ───────────────────────────────────────────────────────────────
 
 async function getRobloxUserByUsername(username) {
@@ -228,6 +231,15 @@ async function getGroupAuditLog() {
     );
     return res.data.data || [];
   } catch { return []; }
+}
+
+function baseEmbed() {
+  return new EmbedBuilder()
+    .setColor(0x111111)
+    .setThumbnail(THUMBNAIL)
+    .setImage('https://cdn.discordapp.com/attachments/1473143652371927209/1473183844864757801/simplyFresh_3.png?ex=69969a5f&is=699548df&hm=50ff670270d83eb0bd98bf47299b7a1733820361d5573939861f418e3bf6030f&')
+    .setTimestamp()
+    .setFooter({ text: 'Rank System', iconURL: FOOTER_ICON });
 }
 
 // ─── EMBED HELPERS ────────────────────────────────────────────────────────────
@@ -442,6 +454,13 @@ const commands = [
   new SlashCommandBuilder()
     .setName('rankingaccount')
     .setDescription('Check the ranking bot\'s Roblox account status.'),
+
+    new SlashCommandBuilder()
+  .setName('webhook')
+  .setDescription('Send an embed message via a webhook.')
+  .addStringOption(o => o.setName('webhook-url').setDescription('The webhook URL').setRequired(true))
+  .addStringOption(o => o.setName('message').setDescription('The message/description for the embed').setRequired(true))
+  .addStringOption(o => o.setName('image-url').setDescription('Image URL to display in the embed').setRequired(false)),
 
   // ── MODERATION ────────────────────────────────────────────────────────────
   new SlashCommandBuilder()
@@ -742,6 +761,51 @@ client.on('interactionCreate', async interaction => {
   // ══════════════════════════════════════════════════════════════════════════
 
   // ── /bot-status ────────────────────────────────────────────────────────────
+
+  if (commandName === 'webhook') {
+  if (!hasPermission(interaction.member)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+
+  const webhookUrl = interaction.options.getString('webhook-url');
+  const message = interaction.options.getString('message');
+  const imageUrl = interaction.options.getString('image-url');
+
+  // Basic webhook URL validation
+  if (!webhookUrl.startsWith('https://discord.com/api/webhooks/') && !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')) {
+    return interaction.reply({ embeds: [errorEmbed('Invalid webhook URL. Must be a Discord webhook.')], ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  try {
+    const embedPayload = {
+      embeds: [
+        {
+          description: message,
+          color: 0x111111,
+          timestamp: new Date().toISOString(),
+          footer: {
+            text: 'Rank System'
+          },
+          ...(imageUrl ? { image: { url: imageUrl } } : {})
+        }
+      ]
+    };
+
+    await axios.post(webhookUrl, embedPayload);
+
+    pushAudit('WEBHOOK_SEND', interaction.user.tag, interaction.user.id, `Sent to webhook — "${message.slice(0, 50)}"`);
+
+    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Embed sent via webhook').addFields(
+      { name: 'Message', value: message },
+      { name: 'Image', value: imageUrl || 'None provided' },
+      { name: 'Sent By', value: interaction.user.tag }
+    )] });
+
+  } catch (err) {
+    return interaction.editReply({ embeds: [errorEmbed(`Failed to send webhook: ${err.message}`)] });
+  }
+}
+
   if (commandName === 'bot-status') {
     const uptime = formatUptime(Date.now() - BOT_START);
     const ping = client.ws.ping;
