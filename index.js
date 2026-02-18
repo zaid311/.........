@@ -456,10 +456,9 @@ const commands = [
     .setDescription('Check the ranking bot\'s Roblox account status.'),
 
   new SlashCommandBuilder()
-  .setName('webhook')
-  .setDescription('Send an embed with optional buttons via a webhook.')
-  .addStringOption(o => o.setName('webhook-url').setDescription('The webhook URL').setRequired(true))
-  .addStringOption(o => o.setName('message').setDescription('The embed description').setRequired(true))
+  .setName('send')
+  .setDescription('Send an embed message as the bot to a channel.')
+  .addChannelOption(o => o.setName('channel').setDescription('Channel to send the embed in').setRequired(true))
   .addStringOption(o => o.setName('title').setDescription('Embed title').setRequired(false))
   .addStringOption(o => o.setName('image-url').setDescription('Image URL for the embed').setRequired(false))
   .addStringOption(o => o.setName('color').setDescription('Hex color e.g. #ff0000').setRequired(false))
