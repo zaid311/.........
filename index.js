@@ -455,12 +455,24 @@ const commands = [
     .setName('rankingaccount')
     .setDescription('Check the ranking bot\'s Roblox account status.'),
 
-    new SlashCommandBuilder()
+  new SlashCommandBuilder()
   .setName('webhook')
-  .setDescription('Send an embed message via a webhook.')
+  .setDescription('Send an embed with optional buttons via a webhook.')
   .addStringOption(o => o.setName('webhook-url').setDescription('The webhook URL').setRequired(true))
-  .addStringOption(o => o.setName('message').setDescription('The message/description for the embed').setRequired(true))
-  .addStringOption(o => o.setName('image-url').setDescription('Image URL to display in the embed').setRequired(false)),
+  .addStringOption(o => o.setName('message').setDescription('The embed description').setRequired(true))
+  .addStringOption(o => o.setName('title').setDescription('Embed title').setRequired(false))
+  .addStringOption(o => o.setName('image-url').setDescription('Image URL for the embed').setRequired(false))
+  .addStringOption(o => o.setName('color').setDescription('Hex color e.g. #ff0000').setRequired(false))
+  .addStringOption(o => o.setName('button1-label').setDescription('Button 1 label').setRequired(false))
+  .addStringOption(o => o.setName('button1-url').setDescription('Button 1 URL').setRequired(false))
+  .addStringOption(o => o.setName('button2-label').setDescription('Button 2 label').setRequired(false))
+  .addStringOption(o => o.setName('button2-url').setDescription('Button 2 URL').setRequired(false))
+  .addStringOption(o => o.setName('button3-label').setDescription('Button 3 label').setRequired(false))
+  .addStringOption(o => o.setName('button3-url').setDescription('Button 3 URL').setRequired(false))
+  .addStringOption(o => o.setName('button4-label').setDescription('Button 4 label').setRequired(false))
+  .addStringOption(o => o.setName('button4-url').setDescription('Button 4 URL').setRequired(false))
+  .addStringOption(o => o.setName('button5-label').setDescription('Button 5 label').setRequired(false))
+  .addStringOption(o => o.setName('button5-url').setDescription('Button 5 URL').setRequired(false)),
 
   // ── MODERATION ────────────────────────────────────────────────────────────
   new SlashCommandBuilder()
@@ -762,47 +774,92 @@ client.on('interactionCreate', async interaction => {
 
   // ── /bot-status ────────────────────────────────────────────────────────────
 
-  if (commandName === 'webhook') {
+if (commandName === 'webhook') {
   if (!hasPermission(interaction.member)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
 
-  const webhookUrl = interaction.options.getString('webhook-url');
-  const message = interaction.options.getString('message');
-  const imageUrl = interaction.options.getString('image-url');
+  const webhookUrl   = interaction.options.getString('webhook-url');
+  const message      = interaction.options.getString('message');
+  const title        = interaction.options.getString('title');
+  const imageUrl     = interaction.options.getString('image-url');
+  const colorInput   = interaction.options.getString('color');
 
-  // Basic webhook URL validation
-  if (!webhookUrl.startsWith('https://discord.com/api/webhooks/') && !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')) {
+  // Validate webhook URL
+  if (
+    !webhookUrl.startsWith('https://discord.com/api/webhooks/') &&
+    !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')
+  ) {
     return interaction.reply({ embeds: [errorEmbed('Invalid webhook URL. Must be a Discord webhook.')], ephemeral: true });
+  }
+
+  // Parse color
+  let color = 0x111111;
+  if (colorInput) {
+    const hex = colorInput.replace('#', '');
+    const parsed = parseInt(hex, 16);
+    if (!isNaN(parsed)) color = parsed;
+  }
+
+  // Collect buttons (up to 5)
+  const buttons = [];
+  for (let i = 1; i <= 5; i++) {
+    const label = interaction.options.getString(`button${i}-label`);
+    const url   = interaction.options.getString(`button${i}-url`);
+    if (label && url) {
+      // Validate URL
+      try {
+        new URL(url);
+        buttons.push({ type: 2, style: 5, label, url }); // style 5 = LINK button
+      } catch {
+        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has an invalid URL: ${url}`)], ephemeral: true });
+      }
+    } else if (label && !url) {
+      return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a label but no URL.`)], ephemeral: true });
+    } else if (!label && url) {
+      return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a URL but no label.`)], ephemeral: true });
+    }
   }
 
   await interaction.deferReply({ ephemeral: true });
 
   try {
+    // Build embed payload
     const embedPayload = {
-      embeds: [
-        {
-          description: message,
-          color: 0x111111,
-          timestamp: new Date().toISOString(),
-          footer: {
-            text: 'Rank System'
-          },
-          ...(imageUrl ? { image: { url: imageUrl } } : {})
-        }
-      ]
+      description: message,
+      color,
+      timestamp: new Date().toISOString(),
+      footer: { text: 'Rank System' },
+      ...(title    ? { title }                  : {}),
+      ...(imageUrl ? { image: { url: imageUrl } } : {})
     };
 
-    await axios.post(webhookUrl, embedPayload);
+    // Build components (action row with buttons)
+    const components = buttons.length > 0
+      ? [{ type: 1, components: buttons }] // type 1 = ActionRow
+      : [];
 
-    pushAudit('WEBHOOK_SEND', interaction.user.tag, interaction.user.id, `Sent to webhook — "${message.slice(0, 50)}"`);
+    await axios.post(webhookUrl, {
+      embeds: [embedPayload],
+      ...(components.length > 0 ? { components } : {})
+    });
 
-    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Embed sent via webhook').addFields(
-      { name: 'Message', value: message },
-      { name: 'Image', value: imageUrl || 'None provided' },
-      { name: 'Sent By', value: interaction.user.tag }
+    pushAudit('WEBHOOK_SEND', interaction.user.tag, interaction.user.id, `"${message.slice(0, 50)}" — ${buttons.length} button(s)`);
+
+    // Build preview for confirmation
+    const buttonPreview = buttons.length
+      ? buttons.map((b, i) => `**${i + 1}.** [${b.label}](${b.url})`).join('\n')
+      : 'None';
+
+    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Webhook embed sent').addFields(
+      { name: 'Title',    value: title   || 'None',          inline: true },
+      { name: 'Color',    value: colorInput || '#111111',     inline: true },
+      { name: 'Image',    value: imageUrl ? '✓ Set' : 'None', inline: true },
+      { name: 'Message',  value: message.slice(0, 200)               },
+      { name: `Buttons (${buttons.length})`, value: buttonPreview    },
+      { name: 'Sent By',  value: interaction.user.tag                }
     )] });
 
   } catch (err) {
-    return interaction.editReply({ embeds: [errorEmbed(`Failed to send webhook: ${err.message}`)] });
+    return interaction.editReply({ embeds: [errorEmbed(`Failed to send: ${err.message}`)] });
   }
 }
 
