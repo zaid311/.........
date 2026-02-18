@@ -9,6 +9,15 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// --- Keep-alive endpoint for Render ---
+const express = require('express');
+const app = express();
+
+app.get('/', (req, res) => res.send('Bot is running!'));
+
+const PORT = process.env.PORT || 3020;
+app.listen(PORT, () => console.log(`🌐 Web server live on port ${PORT}`));
+
 // ─── ENV ──────────────────────────────────────────────────────────────────────
 
 const DISCORD_TOKEN  = process.env.DISCORD_TOKEN;
