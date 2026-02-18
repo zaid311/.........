@@ -778,39 +778,36 @@ if (commandName === 'webhook') {
   if (!hasPermission(interaction.member)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
 
   const webhookUrl   = interaction.options.getString('webhook-url');
-  const message      = interaction.options.getString('message');
+  const message      = interaction.options.getString('message')
+                         .replace(/\\n/g, '\n'); // allows typing \n for new lines
   const title        = interaction.options.getString('title');
   const imageUrl     = interaction.options.getString('image-url');
   const colorInput   = interaction.options.getString('color');
 
-  // Validate webhook URL
   if (
     !webhookUrl.startsWith('https://discord.com/api/webhooks/') &&
     !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')
   ) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid webhook URL. Must be a Discord webhook.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('Invalid webhook URL.')], ephemeral: true });
   }
 
-  // Parse color
   let color = 0x111111;
   if (colorInput) {
-    const hex = colorInput.replace('#', '');
-    const parsed = parseInt(hex, 16);
+    const parsed = parseInt(colorInput.replace('#', ''), 16);
     if (!isNaN(parsed)) color = parsed;
   }
 
-  // Collect buttons (up to 5)
+  // Collect buttons
   const buttons = [];
   for (let i = 1; i <= 5; i++) {
     const label = interaction.options.getString(`button${i}-label`);
     const url   = interaction.options.getString(`button${i}-url`);
     if (label && url) {
-      // Validate URL
       try {
         new URL(url);
-        buttons.push({ type: 2, style: 5, label, url }); // style 5 = LINK button
+        buttons.push({ label, url });
       } catch {
-        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has an invalid URL: ${url}`)], ephemeral: true });
+        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has an invalid URL.`)], ephemeral: true });
       }
     } else if (label && !url) {
       return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a label but no URL.`)], ephemeral: true });
@@ -822,40 +819,55 @@ if (commandName === 'webhook') {
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    // Build embed payload
+    // Step 1: Send embed via webhook
     const embedPayload = {
       description: message,
       color,
       timestamp: new Date().toISOString(),
-      footer: { text: 'Rank System' },
-      ...(title    ? { title }                  : {}),
+      footer: { text: 'SimplyFresh System' }, // ← changed here
+      ...(title    ? { title }                   : {}),
       ...(imageUrl ? { image: { url: imageUrl } } : {})
     };
 
-    // Build components (action row with buttons)
-    const components = buttons.length > 0
-      ? [{ type: 1, components: buttons }] // type 1 = ActionRow
-      : [];
-
-    await axios.post(webhookUrl, {
-      embeds: [embedPayload],
-      ...(components.length > 0 ? { components } : {})
+    const webhookRes = await axios.post(`${webhookUrl}?wait=true`, {
+      embeds: [embedPayload]
     });
+
+    // Step 2: If buttons exist, fetch the channel from the webhook and send a follow-up bot message with buttons
+    if (buttons.length > 0) {
+      // Extract channel ID from webhook info
+      const webhookInfo = await axios.get(webhookUrl);
+      const channelId = webhookInfo.data.channel_id;
+
+      if (channelId) {
+        const channel = await client.channels.fetch(channelId);
+        if (channel) {
+          const row = new ActionRowBuilder().addComponents(
+            ...buttons.map(b =>
+              new ButtonBuilder()
+                .setLabel(b.label)
+                .setURL(b.url)
+                .setStyle(ButtonStyle.Link)
+            )
+          );
+          await channel.send({ components: [row] });
+        }
+      }
+    }
 
     pushAudit('WEBHOOK_SEND', interaction.user.tag, interaction.user.id, `"${message.slice(0, 50)}" — ${buttons.length} button(s)`);
 
-    // Build preview for confirmation
     const buttonPreview = buttons.length
       ? buttons.map((b, i) => `**${i + 1}.** [${b.label}](${b.url})`).join('\n')
       : 'None';
 
-    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Webhook embed sent').addFields(
-      { name: 'Title',    value: title   || 'None',          inline: true },
-      { name: 'Color',    value: colorInput || '#111111',     inline: true },
-      { name: 'Image',    value: imageUrl ? '✓ Set' : 'None', inline: true },
-      { name: 'Message',  value: message.slice(0, 200)               },
-      { name: `Buttons (${buttons.length})`, value: buttonPreview    },
-      { name: 'Sent By',  value: interaction.user.tag                }
+    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Webhook sent successfully').addFields(
+      { name: 'Title',   value: title    || 'None',           inline: true },
+      { name: 'Color',   value: colorInput || '#111111',       inline: true },
+      { name: 'Image',   value: imageUrl  ? '✓ Set' : 'None', inline: true },
+      { name: 'Message', value: message.slice(0, 200)                       },
+      { name: `Buttons (${buttons.length})`, value: buttonPreview           },
+      { name: 'Sent By', value: interaction.user.tag                        }
     )] });
 
   } catch (err) {
