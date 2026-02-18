@@ -2,7 +2,7 @@ require('dotenv').config();
 const {
   Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder,
   ActionRowBuilder, ButtonBuilder, ButtonStyle, REST, Routes,
-  ActivityType
+  ActivityType, ModalBuilder, TextInputBuilder, TextInputStyle  // ← add these 3
 } = require('discord.js');
 const axios = require('axios');
 const fs = require('fs');
@@ -765,6 +765,73 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // ── MODAL SUBMIT ──────────────────────────────────────────────────────────
+  if (interaction.isModalSubmit()) {
+    const [action, changeId] = interaction.customId.split('::');
+
+    if (action === 'sendmodal') {
+      const pending = pendingChanges.get(changeId);
+      if (!pending) return interaction.reply({ embeds: [errorEmbed('This session expired. Please run /send again.')], ephemeral: true });
+      if (interaction.user.id !== pending.requesterId) return interaction.reply({ embeds: [errorEmbed('Only the person who ran this command can submit.')], ephemeral: true });
+
+      pendingChanges.delete(changeId);
+
+      const message = interaction.fields.getTextInputValue('embed-message');
+
+      let color = 0x111111;
+      if (pending.colorInput) {
+        const parsed = parseInt(pending.colorInput.replace('#', ''), 16);
+        if (!isNaN(parsed)) color = parsed;
+      }
+
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(color)
+          .setDescription(message)
+          .setTimestamp()
+          .setFooter({ text: 'SimplyFresh System', iconURL: FOOTER_ICON });
+
+        if (pending.title)    embed.setTitle(pending.title);
+        if (pending.imageUrl) embed.setImage(pending.imageUrl);
+
+        const components = [];
+        if (pending.buttons.length > 0) {
+          const row = new ActionRowBuilder().addComponents(
+            ...pending.buttons.map(b =>
+              new ButtonBuilder()
+                .setLabel(b.label)
+                .setURL(b.url)
+                .setStyle(ButtonStyle.Link)
+            )
+          );
+          components.push(row);
+        }
+
+        const targetChannel = await client.channels.fetch(pending.channelId);
+        await targetChannel.send({ embeds: [embed], components });
+
+        pushAudit('SEND', interaction.user.tag, interaction.user.id, `Sent to #${targetChannel.name} — "${message.slice(0, 50)}"`);
+
+        const buttonPreview = pending.buttons.length
+          ? pending.buttons.map((b, i) => `**${i + 1}.** [${b.label}](${b.url})`).join('\n')
+          : 'None';
+
+        return interaction.reply({ embeds: [baseEmbed().setDescription('✓ Embed sent successfully').addFields(
+          { name: 'Channel',  value: `<#${pending.channelId}>`,           inline: true },
+          { name: 'Title',    value: pending.title    || 'None',           inline: true },
+          { name: 'Color',    value: pending.colorInput || '#111111',      inline: true },
+          { name: 'Image',    value: pending.imageUrl  ? '✓ Set' : 'None', inline: true },
+          { name: 'Message',  value: message.slice(0, 200)                              },
+          { name: `Buttons (${pending.buttons.length})`, value: buttonPreview           },
+          { name: 'Sent By',  value: interaction.user.tag                               }
+        )] , ephemeral: true });
+
+      } catch (err) {
+        return interaction.reply({ embeds: [errorEmbed(`Failed to send: ${err.message}`)], ephemeral: true });
+      }
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
   const { commandName } = interaction;
 
@@ -774,106 +841,72 @@ client.on('interactionCreate', async interaction => {
 
   // ── /bot-status ────────────────────────────────────────────────────────────
 
-if (commandName === 'webhook') {
-  if (!hasPermission(interaction.member)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+// ── /send ──────────────────────────────────────────────────────────────────
+  if (commandName === 'send') {
+    if (!hasPermission(interaction.member)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
 
-  const webhookUrl   = interaction.options.getString('webhook-url');
-  const message      = interaction.options.getString('message')
-                         .replace(/\\n/g, '\n'); // allows typing \n for new lines
-  const title        = interaction.options.getString('title');
-  const imageUrl     = interaction.options.getString('image-url');
-  const colorInput   = interaction.options.getString('color');
+    const channel    = interaction.options.getChannel('channel');
+    const title      = interaction.options.getString('title');
+    const imageUrl   = interaction.options.getString('image-url');
+    const colorInput = interaction.options.getString('color');
 
-  if (
-    !webhookUrl.startsWith('https://discord.com/api/webhooks/') &&
-    !webhookUrl.startsWith('https://discordapp.com/api/webhooks/')
-  ) {
-    return interaction.reply({ embeds: [errorEmbed('Invalid webhook URL.')], ephemeral: true });
-  }
-
-  let color = 0x111111;
-  if (colorInput) {
-    const parsed = parseInt(colorInput.replace('#', ''), 16);
-    if (!isNaN(parsed)) color = parsed;
-  }
-
-  // Collect buttons
-  const buttons = [];
-  for (let i = 1; i <= 5; i++) {
-    const label = interaction.options.getString(`button${i}-label`);
-    const url   = interaction.options.getString(`button${i}-url`);
-    if (label && url) {
-      try {
-        new URL(url);
-        buttons.push({ label, url });
-      } catch {
-        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has an invalid URL.`)], ephemeral: true });
+    // Validate image URL if provided
+    if (imageUrl) {
+      try { new URL(imageUrl); } catch {
+        return interaction.reply({ embeds: [errorEmbed('Invalid image URL.')], ephemeral: true });
       }
-    } else if (label && !url) {
-      return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a label but no URL.`)], ephemeral: true });
-    } else if (!label && url) {
-      return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a URL but no label.`)], ephemeral: true });
     }
-  }
 
-  await interaction.deferReply({ ephemeral: true });
-
-  try {
-    // Step 1: Send embed via webhook
-    const embedPayload = {
-      description: message,
-      color,
-      timestamp: new Date().toISOString(),
-      footer: { text: 'SimplyFresh System' }, // ← changed here
-      ...(title    ? { title }                   : {}),
-      ...(imageUrl ? { image: { url: imageUrl } } : {})
-    };
-
-    const webhookRes = await axios.post(`${webhookUrl}?wait=true`, {
-      embeds: [embedPayload]
-    });
-
-    // Step 2: If buttons exist, fetch the channel from the webhook and send a follow-up bot message with buttons
-    if (buttons.length > 0) {
-      // Extract channel ID from webhook info
-      const webhookInfo = await axios.get(webhookUrl);
-      const channelId = webhookInfo.data.channel_id;
-
-      if (channelId) {
-        const channel = await client.channels.fetch(channelId);
-        if (channel) {
-          const row = new ActionRowBuilder().addComponents(
-            ...buttons.map(b =>
-              new ButtonBuilder()
-                .setLabel(b.label)
-                .setURL(b.url)
-                .setStyle(ButtonStyle.Link)
-            )
-          );
-          await channel.send({ components: [row] });
+    // Collect and validate buttons
+    const buttons = [];
+    for (let i = 1; i <= 5; i++) {
+      const label = interaction.options.getString(`button${i}-label`);
+      const url   = interaction.options.getString(`button${i}-url`);
+      if (label && url) {
+        try {
+          new URL(url);
+          buttons.push({ label, url });
+        } catch {
+          return interaction.reply({ embeds: [errorEmbed(`Button ${i} has an invalid URL.`)], ephemeral: true });
         }
+      } else if (label && !url) {
+        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a label but no URL.`)], ephemeral: true });
+      } else if (!label && url) {
+        return interaction.reply({ embeds: [errorEmbed(`Button ${i} has a URL but no label.`)], ephemeral: true });
       }
     }
 
-    pushAudit('WEBHOOK_SEND', interaction.user.tag, interaction.user.id, `"${message.slice(0, 50)}" — ${buttons.length} button(s)`);
+    // Store everything in pending, then show modal for the message
+    const changeId = `${interaction.id}-${Date.now()}`;
+    pendingChanges.set(changeId, {
+      requesterId: interaction.user.id,
+      channelId:   channel.id,
+      title,
+      imageUrl,
+      colorInput,
+      buttons
+    });
+    setTimeout(() => pendingChanges.delete(changeId), 300_000); // 5 min to fill modal
 
-    const buttonPreview = buttons.length
-      ? buttons.map((b, i) => `**${i + 1}.** [${b.label}](${b.url})`).join('\n')
-      : 'None';
+    // Show the modal with a big text box
+    const { ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 
-    return interaction.editReply({ embeds: [baseEmbed().setDescription('✓ Webhook sent successfully').addFields(
-      { name: 'Title',   value: title    || 'None',           inline: true },
-      { name: 'Color',   value: colorInput || '#111111',       inline: true },
-      { name: 'Image',   value: imageUrl  ? '✓ Set' : 'None', inline: true },
-      { name: 'Message', value: message.slice(0, 200)                       },
-      { name: `Buttons (${buttons.length})`, value: buttonPreview           },
-      { name: 'Sent By', value: interaction.user.tag                        }
-    )] });
+    const modal = new ModalBuilder()
+      .setCustomId(`sendmodal::${changeId}`)
+      .setTitle('Write Your Embed Message');
 
-  } catch (err) {
-    return interaction.editReply({ embeds: [errorEmbed(`Failed to send: ${err.message}`)] });
+    const messageInput = new TextInputBuilder()
+      .setCustomId('embed-message')
+      .setLabel('Message (Shift+Enter for new lines)')
+      .setStyle(TextInputStyle.Paragraph) // big multiline box
+      .setPlaceholder('Type your message here...\nYou can use Shift+Enter for new lines!')
+      .setRequired(true)
+      .setMaxLength(4000);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(messageInput));
+
+    return interaction.showModal(modal);
   }
-}
 
   if (commandName === 'bot-status') {
     const uptime = formatUptime(Date.now() - BOT_START);
